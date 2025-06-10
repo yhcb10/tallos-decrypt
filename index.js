@@ -56,3 +56,13 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+} catch (error) {
+    console.error('Erro ao descriptografar:', error);
+    console.error('Stack trace:', error.stack);
+    res.status(500).json({ 
+      error: 'Decryption failed', 
+      details: error.message,
+      type: error.constructor.name
+    });
+  }
