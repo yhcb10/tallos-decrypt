@@ -48,9 +48,40 @@ app.post('/decrypt', async (req, res) => {
     console.log('Descriptografia concluída');
     
     const decryptedData = new TextDecoder().decode(plaintext);
-    console.log('Dados decodificados, fazendo parse JSON...');
+    console.log('Dados decodificados, tamanho:', decryptedData.length);
     
-    const messages = JSON.parse(decryptedData);
+    // Limpar caracteres de controle antes do parse
+    const cleanedData = decryptedData
+      .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove caracteres de controle
+      .replace(/\r\n/g, '\\n') // Converte quebras de linha Windows
+      .replace(/\n/g, '\\n') // Converte quebras de linha Unix
+      .replace(/\r/g, '\\n') // Converte retorno de carro
+      .replace(/\t/g, '\\t'); // Converte tabs
+    
+    console.log('Dados limpos, fazendo parse JSON...');
+    
+    let messages;
+    try {
+      messages = JSON.parse(cleanedData);
+    } catch (parseError) {
+      console.error('Erro no parse JSON:', parseError);
+      console.log('Primeiros 500 caracteres dos dados:', cleanedData.substring(0, 500));
+      
+      // Tentar uma limpeza mais agressiva
+      const moreCleanedData = cleanedData
+        .replace(/\\n/g, ' ') // Substitui \n por espaço
+        .replace(/\\t/g, ' ') // Substitui \t por espaço
+        .replace(/\s+/g, ' '); // Remove espaços múltiplos
+      
+      try {
+        messages = JSON.parse(moreCleanedData);
+        console.log('Parse bem sucedido após limpeza adicional');
+      } catch (secondError) {
+        // Se ainda falhar, retornar o erro original
+        throw parseError;
+      }
+    }
+    
     console.log('Parse concluído. Total de mensagens:', Array.isArray(messages) ? messages.length : 'não é array');
     
     res.json({
