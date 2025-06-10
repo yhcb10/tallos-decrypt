@@ -38,51 +38,46 @@ app.post('/test', (req, res) => {
   });
 });
 
-// Função auxiliar para limpar strings JSON
-function cleanJsonString(str) {
-  // Estratégia mais agressiva para limpar o JSON
-  let cleaned = str;
-  
-  // 1. Substituir quebras de linha reais por escape sequences
-  cleaned = cleaned.replace(/\r\n/g, '\\n');
-  cleaned = cleaned.replace(/\n/g, '\\n');
-  cleaned = cleaned.replace(/\r/g, '\\n');
-  cleaned = cleaned.replace(/\t/g, '\\t');
-  
-  // 2. Remover caracteres de controle não imprimíveis
-  cleaned = cleaned.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
-  
-  // 3. Escapar aspas não escapadas dentro de strings
-  // Isso é complexo, então vamos usar uma abordagem diferente
-  
-  return cleaned;
+// Função para escapar strings JSON corretamente
+function escapeJsonString(str) {
+  return str
+    .replace(/\\/g, '\\\\')     // Escapar barras invertidas PRIMEIRO
+    .replace(/"/g, '\\"')       // Escapar aspas duplas
+    .replace(/\b/g, '\\b')      // Backspace
+    .replace(/\f/g, '\\f')      // Form feed
+    .replace(/\n/g, '\\n')      // New line
+    .replace(/\r/g, '\\r')      // Carriage return
+    .replace(/\t/g, '\\t')      // Tab
+    .replace(/[\x00-\x1F\x7F-\x9F]/g, function(c) {
+      // Escapar outros caracteres de controle
+      return '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4);
+    });
 }
 
-// Função para extrair e limpar JSON de forma mais inteligente
-function extractValidJson(data) {
-  // Procurar pelo início e fim do array JSON
-  const startIndex = data.indexOf('[');
-  const endIndex = data.lastIndexOf(']') + 1;
+// Função para processar mensagens com formatação especial
+function fixMessagesJson(jsonStr) {
+  // Estratégia: processar o JSON campo por campo
+  // Procurar por padrões problemáticos conhecidos
   
-  if (startIndex === -1 || endIndex === 0) {
-    throw new Error('No JSON array found in decrypted data');
-  }
+  // 1. Substituir sequências problemáticas de backticks
+  jsonStr = jsonStr.replace(/"`\s+`/g, '\\n'); // "` ` para nova linha
+  jsonStr = jsonStr.replace(/"\s*`\s*`\s*/g, '\\n'); // Variações de backticks
   
-  // Extrair apenas a parte JSON
-  const jsonPart = data.substring(startIndex, endIndex);
-  
-  // Tentar limpar caracteres problemáticos dentro das strings JSON
-  // Esta regex encontra strings JSON e aplica limpeza nelas
-  const cleanedJson = jsonPart.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, function(match, content) {
-    // Limpar o conteúdo dentro das aspas
-    const cleaned = content
-      .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove caracteres de controle
-      .replace(/\\/g, '\\\\') // Escapa barras invertidas
-      .replace(/"/g, '\\"'); // Escapa aspas
-    return `"${cleaned}"`;
+  // 2. Corrigir escape de barras invertidas em campos de conteúdo
+  // Procurar por patterns como ,"content":"...\n..." e corrigir
+  jsonStr = jsonStr.replace(/"content"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/g, function(match, content) {
+    // Re-escapar o conteúdo corretamente
+    const fixed = escapeJsonString(content);
+    return `"content":"${fixed}"`;
   });
   
-  return cleanedJson;
+  // 3. Corrigir campos text similares
+  jsonStr = jsonStr.replace(/"text"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/g, function(match, text) {
+    const fixed = escapeJsonString(text);
+    return `"text":"${fixed}"`;
+  });
+  
+  return jsonStr;
 }
 
 // Função para tentar múltiplas estratégias de parse
@@ -158,92 +153,105 @@ app.post('/decrypt', async (req, res) => {
     const decryptedData = new TextDecoder().decode(plaintext);
     console.log('Dados decodificados, tamanho:', decryptedData.length);
     
-    // Estratégia 1: Tentar parse direto
+    // Nova estratégia: corrigir o JSON antes de parsear
     let messages;
     try {
-      messages = JSON.parse(decryptedData);
-      console.log('Parse direto bem sucedido!');
+      // Primeiro, tentar corrigir problemas conhecidos
+      const fixedData = fixMessagesJson(decryptedData);
+      messages = JSON.parse(fixedData);
+      console.log('Parse com correções bem sucedido!');
     } catch (e1) {
-      console.log('Parse direto falhou, tentando limpar dados...');
+      console.log('Correção inicial falhou, tentando estratégia manual...');
       
-      // Estratégia 2: Extrair e limpar JSON
       try {
-        const cleanedJson = extractValidJson(decryptedData);
-        messages = JSON.parse(cleanedJson);
-        console.log('Parse após limpeza bem sucedido!');
+        // Estratégia manual: processar linha por linha
+        // Dividir por objetos e processar cada um
+        const objects = decryptedData.match(/\{[^{}]*\}/g);
+        if (objects && objects.length > 0) {
+          messages = objects.map(objStr => {
+            try {
+              // Limpar cada objeto individualmente
+              const cleaned = objStr
+                .replace(/\\n/g, ' ')
+                .replace(/\\r/g, ' ')
+                .replace(/\\t/g, ' ')
+                .replace(/"\s*`\s*`\s*/g, ' ')
+                .replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+              
+              return JSON.parse(cleaned);
+            } catch (e) {
+              console.log('Falha ao parsear objeto:', objStr.substring(0, 100));
+              return null;
+            }
+          }).filter(obj => obj !== null);
+          
+          console.log(`Parse manual: ${messages.length} mensagens recuperadas`);
+        } else {
+          throw new Error('Não foi possível extrair objetos JSON');
+        }
       } catch (e2) {
-        console.log('Limpeza falhou, tentando estratégia de emergência...');
+        // Última tentativa: usar regex para extrair o array completo
+        console.log('Tentando extração por regex...');
         
-        // Estratégia 3: Usar eval como último recurso (CUIDADO!)
-        try {
-          // Remover caracteres problemáticos de forma mais agressiva
-          const emergencyClean = decryptedData
-            .replace(/[\x00-\x1F\x7F-\x9F]/g, ' ') // Substitui controles por espaço
-            .replace(/\\/g, '\\\\') // Escapa barras
-            .replace(/\n/g, ' ') // Remove quebras de linha
-            .replace(/\r/g, ' ') // Remove retornos
-            .replace(/\t/g, ' '); // Remove tabs
+        // Procurar o array de mensagens
+        const arrayMatch = decryptedData.match(/\[[\s\S]*\]/);
+        if (arrayMatch) {
+          let arrayStr = arrayMatch[0];
           
-          // Tentar encontrar o array JSON
-          const match = emergencyClean.match(/\[[\s\S]*\]/);
-          if (match) {
-            // Limpar o match antes de parsear
-            const arrayStr = match[0]
-              .replace(/,\s*,/g, ',') // Remove vírgulas duplas
-              .replace(/,\s*\]/g, ']') // Remove vírgula antes de ]
-              .replace(/\[\s*,/g, '['); // Remove vírgula depois de [
-            
+          // Aplicar correções específicas para o problema identificado
+          // Substituir sequências problemáticas
+          arrayStr = arrayStr.replace(/\\n"\s*`\s*`/g, '\\n'); 
+          arrayStr = arrayStr.replace(/"\s*`\s*`\s*/g, ' ');
+          arrayStr = arrayStr.replace(/\\"/g, '\\"');
+          arrayStr = arrayStr.replace(/\\\\/g, '\\\\');
+          
+          // Remover caracteres de controle
+          arrayStr = arrayStr.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+          
+          try {
             messages = JSON.parse(arrayStr);
-            console.log('Parse de emergência bem sucedido!');
-          } else {
-            throw new Error('No JSON array found');
+            console.log('Extração por regex bem sucedida!');
+          } catch (e3) {
+            // Se ainda falhar, mostrar detalhes do erro
+            const errorPos = 6801;
+            const sample = decryptedData.substring(errorPos - 200, errorPos + 200);
+            
+            return res.status(500).json({
+              error: 'JSON Parse Failed',
+              details: e1.message,
+              position: errorPos,
+              characterCode: decryptedData.charCodeAt(errorPos),
+              sample: sample,
+              suggestion: 'Problema com formatação de mensagens contendo backticks'
+            });
           }
-        } catch (e3) {
-          // Se tudo falhar, retornar erro detalhado
-          console.error('Todas as estratégias falharam');
-          console.log('Amostra dos dados ao redor do erro (posição 6801):');
-          const errorPos = 6801;
-          const start = Math.max(0, errorPos - 100);
-          const end = Math.min(decryptedData.length, errorPos + 100);
-          console.log(decryptedData.substring(start, end));
-          
-          // Identificar o caractere problemático
-          if (errorPos < decryptedData.length) {
-            const problemChar = decryptedData.charCodeAt(errorPos);
-            console.log(`Caractere na posição ${errorPos}: código ${problemChar} (0x${problemChar.toString(16)})`);
-          }
-          
-          return res.status(500).json({
-            error: 'JSON Parse Failed',
-            details: e1.message,
-            position: errorPos,
-            sample: decryptedData.substring(start, end),
-            suggestion: 'The decrypted data contains invalid JSON. Check logs for details.'
-          });
         }
       }
     }
     
+    // Validar resultado
+    if (!messages) {
+      throw new Error('Não foi possível processar as mensagens');
+    }
+    
     console.log('Parse concluído. Total de mensagens:', Array.isArray(messages) ? messages.length : 'não é array');
     
-    // Validar e processar mensagens
+    // Limpar mensagens individualmente
     if (Array.isArray(messages)) {
       console.log(`✅ Sucesso! ${messages.length} mensagens processadas`);
       
-      // Limpar cada mensagem individualmente
+      // Garantir que cada mensagem está limpa
       const cleanedMessages = messages.map(msg => {
         if (msg && typeof msg === 'object') {
-          // Limpar campos de texto que possam ter caracteres problemáticos
-          if (msg.text && typeof msg.text === 'string') {
-            msg.text = msg.text
-              .replace(/[\x00-\x1F\x7F-\x9F]/g, '')
-              .trim();
-          }
-          if (msg.caption && typeof msg.caption === 'string') {
-            msg.caption = msg.caption
-              .replace(/[\x00-\x1F\x7F-\x9F]/g, '')
-              .trim();
-          }
+          // Limpar campos de texto
+          ['text', 'content', 'caption'].forEach(field => {
+            if (msg[field] && typeof msg[field] === 'string') {
+              // Remover caracteres problemáticos mas preservar formatação básica
+              msg[field] = msg[field]
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+                .trim();
+            }
+          });
         }
         return msg;
       });
@@ -308,65 +316,6 @@ app.post('/debug-decrypt', async (req, res) => {
       analysis: analysis,
       tip: 'Procure por caracteres com código < 32 ou > 126 - estes são problemáticos'
     });
-    
-  } catch (error) {
-    res.status(500).json({ 
-      error: 'Debug failed', 
-      details: error.message 
-    });
-  }
-});
-
-// Adicione este endpoint antes do listen() no index.js
-
-// Debug detalhado da posição do erro
-app.post('/debug-error-position', async (req, res) => {
-  try {
-    const { jwe, privateKey, errorPosition = 6801 } = req.body;
-    
-    // Descriptografar
-    const key = await jose.importJWK(privateKey, privateKey.alg);
-    const { plaintext } = await jose.compactDecrypt(jwe, key);
-    const decryptedData = new TextDecoder().decode(plaintext);
-    
-    // Análise ao redor da posição do erro
-    const start = Math.max(0, errorPosition - 200);
-    const end = Math.min(decryptedData.length, errorPosition + 200);
-    
-    const analysis = {
-      totalLength: decryptedData.length,
-      errorPosition: errorPosition,
-      context: {
-        before: decryptedData.substring(start, errorPosition),
-        at: decryptedData.substring(errorPosition, errorPosition + 1),
-        after: decryptedData.substring(errorPosition + 1, end)
-      },
-      characterAnalysis: []
-    };
-    
-    // Analisar caracteres ao redor do erro
-    for (let i = errorPosition - 10; i < errorPosition + 10 && i < decryptedData.length; i++) {
-      if (i >= 0) {
-        const char = decryptedData[i];
-        const code = decryptedData.charCodeAt(i);
-        analysis.characterAnalysis.push({
-          position: i,
-          char: code >= 32 && code <= 126 ? char : `[${code}]`,
-          code: code,
-          hex: '0x' + code.toString(16),
-          type: code < 32 ? 'control' : code > 126 ? 'extended' : 'normal'
-        });
-      }
-    }
-    
-    // Tentar identificar o padrão JSON ao redor
-    const jsonContext = decryptedData.substring(errorPosition - 50, errorPosition + 50);
-    analysis.jsonPattern = jsonContext;
-    
-    // Sugestão de correção
-    analysis.suggestion = 'Procure por aspas não escapadas, quebras de linha ou caracteres especiais';
-    
-    res.json(analysis);
     
   } catch (error) {
     res.status(500).json({ 
