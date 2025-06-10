@@ -317,6 +317,65 @@ app.post('/debug-decrypt', async (req, res) => {
   }
 });
 
+// Adicione este endpoint antes do listen() no index.js
+
+// Debug detalhado da posição do erro
+app.post('/debug-error-position', async (req, res) => {
+  try {
+    const { jwe, privateKey, errorPosition = 6801 } = req.body;
+    
+    // Descriptografar
+    const key = await jose.importJWK(privateKey, privateKey.alg);
+    const { plaintext } = await jose.compactDecrypt(jwe, key);
+    const decryptedData = new TextDecoder().decode(plaintext);
+    
+    // Análise ao redor da posição do erro
+    const start = Math.max(0, errorPosition - 200);
+    const end = Math.min(decryptedData.length, errorPosition + 200);
+    
+    const analysis = {
+      totalLength: decryptedData.length,
+      errorPosition: errorPosition,
+      context: {
+        before: decryptedData.substring(start, errorPosition),
+        at: decryptedData.substring(errorPosition, errorPosition + 1),
+        after: decryptedData.substring(errorPosition + 1, end)
+      },
+      characterAnalysis: []
+    };
+    
+    // Analisar caracteres ao redor do erro
+    for (let i = errorPosition - 10; i < errorPosition + 10 && i < decryptedData.length; i++) {
+      if (i >= 0) {
+        const char = decryptedData[i];
+        const code = decryptedData.charCodeAt(i);
+        analysis.characterAnalysis.push({
+          position: i,
+          char: code >= 32 && code <= 126 ? char : `[${code}]`,
+          code: code,
+          hex: '0x' + code.toString(16),
+          type: code < 32 ? 'control' : code > 126 ? 'extended' : 'normal'
+        });
+      }
+    }
+    
+    // Tentar identificar o padrão JSON ao redor
+    const jsonContext = decryptedData.substring(errorPosition - 50, errorPosition + 50);
+    analysis.jsonPattern = jsonContext;
+    
+    // Sugestão de correção
+    analysis.suggestion = 'Procure por aspas não escapadas, quebras de linha ou caracteres especiais';
+    
+    res.json(analysis);
+    
+  } catch (error) {
+    res.status(500).json({ 
+      error: 'Debug failed', 
+      details: error.message 
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
