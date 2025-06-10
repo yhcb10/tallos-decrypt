@@ -27,16 +27,31 @@ app.post('/decrypt', async (req, res) => {
   try {
     const { jwe, privateKey } = req.body;
     
+    console.log('=== Recebendo requisição de descriptografia ===');
+    console.log('JWE recebido:', jwe ? 'Sim' : 'Não');
+    console.log('Tamanho do JWE:', jwe ? jwe.length : 0);
+    console.log('Chave privada recebida:', privateKey ? 'Sim' : 'Não');
+    
     if (!jwe || !privateKey) {
+      console.log('Erro: Faltando jwe ou privateKey');
       return res.status(400).json({ 
         error: 'Missing jwe or privateKey' 
       });
     }
     
+    console.log('Importando chave JWK...');
     const key = await jose.importJWK(privateKey, privateKey.alg);
+    console.log('Chave importada com sucesso');
+    
+    console.log('Iniciando descriptografia...');
     const { plaintext } = await jose.compactDecrypt(jwe, key);
+    console.log('Descriptografia concluída');
+    
     const decryptedData = new TextDecoder().decode(plaintext);
+    console.log('Dados decodificados, fazendo parse JSON...');
+    
     const messages = JSON.parse(decryptedData);
+    console.log('Parse concluído. Total de mensagens:', Array.isArray(messages) ? messages.length : 'não é array');
     
     res.json({
       success: true,
@@ -45,8 +60,11 @@ app.post('/decrypt', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Erro ao descriptografar:', error);
+    console.error('=== ERRO NA DESCRIPTOGRAFIA ===');
+    console.error('Tipo do erro:', error.constructor.name);
+    console.error('Mensagem:', error.message);
     console.error('Stack trace:', error.stack);
+    
     res.status(500).json({ 
       error: 'Decryption failed', 
       details: error.message,
@@ -55,8 +73,22 @@ app.post('/decrypt', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Endpoint de teste/debug
+app.post('/test', async (req, res) => {
+  console.log('=== TESTE ENDPOINT ===');
+  console.log('Body recebido:', JSON.stringify(req.body).substring(0, 200));
+  res.json({ 
+    received: true, 
+    bodySize: JSON.stringify(req.body).length 
+  });
 });
 
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log('Endpoints disponíveis:');
+  console.log('  GET  / - Status do serviço');
+  console.log('  GET  /health - Health check');
+  console.log('  POST /decrypt - Descriptografar JWE');
+  console.log('  POST /test - Teste de requisição');
+});
